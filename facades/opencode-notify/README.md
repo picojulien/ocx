@@ -11,7 +11,7 @@ You delegate a task and switch to another window. Now you're checking back every
 This plugin solves that:
 
 - **Stay focused** - Work in other apps. A notification arrives when the AI needs you.
-- **Native OS notifications first** - Uses macOS Notification Center, Windows Toast, or Linux notify-send via `node-notifier`.
+- **Native OS notifications first** - Uses macOS Notification Center, Windows Toast, or Linux `org.freedesktop.Notifications` via D-Bus.
 - **Smart defaults** - Won't spam you. Only notifies for meaningful events, with parent-session filtering and quiet-hours support.
 - **Additional [cmux](https://www.cmux.dev/)-native path** - When running in [cmux](https://www.cmux.dev/), can route through `cmux notify` and still falls back safely to desktop notifications.
 
@@ -54,7 +54,7 @@ By default, notifications go through the native OS desktop notification path:
 
 - **macOS:** Notification Center (`terminal-notifier` backend)
 - **Windows:** Toast notifications (`SnoreToast` backend)
-- **Linux:** `notify-send`
+- **Linux:** `org.freedesktop.Notifications` via `dbus-send`, with `node-notifier` fallback
 
 ### Additional [cmux](https://www.cmux.dev/)-native path
 
@@ -64,14 +64,14 @@ When running inside [cmux](https://www.cmux.dev/) (with `CMUX_WORKSPACE_ID` set)
 cmux notify --title "..." --subtitle "..." --body "..."
 ```
 
-If [cmux](https://www.cmux.dev/) is unavailable or invocation fails, notifications automatically fall back to the existing `node-notifier` desktop behavior.
+If [cmux](https://www.cmux.dev/) is unavailable or invocation fails, notifications fall through to the Linux freedesktop D-Bus backend when available, and then to the existing `node-notifier` desktop behavior.
 
 ## Platform Support
 
 | Feature | macOS | Windows | Linux |
 |---------|-------|---------|-------|
 | Native OS notifications | Yes | Yes | Yes |
-| Custom sounds | Yes | No | No |
+| Custom sounds | Yes | No | Hint-based |
 | Focus detection | Yes | No | No |
 | Click-to-focus | Yes | No | No |
 | Terminal detection | Yes | Yes | Yes |
@@ -90,6 +90,23 @@ Works out of the box. To customize, create `~/.config/opencode/kdco-notify.json`
     "permission": "Submarine",
     "question": "Submarine"
   },
+  "linux": {
+    "backend": "auto",
+    "sessionNamePlacement": "summary",
+    "timeoutMs": {
+      "question": 4000
+    },
+    "persistent": {
+      "question": true
+    },
+    "urgency": {
+      "question": "critical"
+    },
+    "soundMode": "name",
+    "soundNames": {
+      "question": "message-new-instant"
+    }
+  },
   "quietHours": {
     "enabled": false,
     "start": "22:00",
@@ -103,9 +120,18 @@ Configuration keys:
 - `notifyChildSessions` (default `false`): when `true`, include child/sub-session `session.idle` and `session.error` notifications (question and permission notifications are unaffected).
 - `terminal` (optional): override terminal auto-detection.
 - `sounds`: per-event sounds (`idle`, `error`, `permission`, optional `question`).
+- `linux.backend`: `auto`, `freedesktop`, or `node-notifier`.
+- `linux.sessionNamePlacement`: put the session title in the Linux notification summary or body.
+- `linux.timeoutMs`: per-event Linux notification timeout overrides.
+- `linux.persistent`: per-event resident notification hints.
+- `linux.urgency`: per-event freedesktop urgency (`low`, `normal`, `critical`).
+- `linux.soundMode`: `name`, `file`, or `off` for Linux sound hints.
+- `linux.soundNames` / `linux.soundFiles`: per-event Linux sound hint values.
 - `quietHours`: scheduled suppression window.
 
 **Available macOS sounds:** Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine, Tink
+
+On Linux, the plugin sends freedesktop notification hints. Whether a sound actually plays depends on your desktop environment and notification server.
 
 ## FAQ
 
