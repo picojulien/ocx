@@ -350,8 +350,16 @@ interface SessionMetadata {
 const QUESTION_DEDUPE_WINDOW_MS = 1500
 const READY_DEDUPE_WINDOW_MS = 1500
 const PERMISSION_DEDUPE_WINDOW_MS = 1500
+const QUESTION_FALLBACK_DELAY_MS = 50
 
 type RecentNotifications = Map<string, number>
+type PendingQuestionNotifications = Map<string, PendingQuestionNotification>
+
+interface PendingQuestionNotification {
+	sessionID: string
+	createdAt: number
+	timeoutID: ReturnType<typeof setTimeout>
+}
 
 function toNonEmptyString(value: unknown): string | null {
 	if (typeof value !== "string") return null
@@ -391,6 +399,46 @@ function buildQuestionToolDedupeKey(sessionID: unknown, callID: unknown): string
 	if (!normalizedCallID) return null
 
 	return `question:${normalizedSessionID}:${normalizedCallID}`
+}
+
+function cancelPendingQuestionNotification(
+	pendingQuestions: PendingQuestionNotifications,
+	questionKey: string,
+): void {
+	const pendingQuestion = pendingQuestions.get(questionKey)
+	if (!pendingQuestion) return
+
+	clearTimeout(pendingQuestion.timeoutID)
+	pendingQuestions.delete(questionKey)
+}
+
+function consumePendingQuestionNotification(
+	pendingQuestions: PendingQuestionNotifications,
+	sessionID: string,
+	callID: string | null,
+): string | null {
+	if (callID) {
+		const exactKey = buildQuestionToolDedupeKey(sessionID, callID)
+		if (exactKey && pendingQuestions.has(exactKey)) {
+			cancelPendingQuestionNotification(pendingQuestions, exactKey)
+			return exactKey
+		}
+	}
+
+	let fallbackEntry: [string, PendingQuestionNotification] | null = null
+	for (const entry of pendingQuestions.entries()) {
+		const [, pendingQuestion] = entry
+		if (pendingQuestion.sessionID !== sessionID) continue
+
+		if (!fallbackEntry || pendingQuestion.createdAt < fallbackEntry[1].createdAt) {
+			fallbackEntry = entry
+		}
+	}
+
+	if (!fallbackEntry) return null
+
+	cancelPendingQuestionNotification(pendingQuestions, fallbackEntry[0])
+	return fallbackEntry[0]
 }
 
 function buildQuestionEventDedupeKey(properties: unknown): string | null {
@@ -786,11 +834,23 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 	const recentQuestionNotifications: RecentNotifications = new Map()
 	const recentReadyNotifications: RecentNotifications = new Map()
 	const recentPermissionNotifications: RecentNotifications = new Map()
+	const pendingQuestionNotifications: PendingQuestionNotifications = new Map()
 
 	const notifyQuestionIfNeeded = async (
-		dedupeKey: string | null,
-		sessionID: string | null,
+		eventProperties: Record<string, unknown>,
 	): Promise<void> => {
+		const sessionID = toNonEmptyString(eventProperties.sessionID)
+		if (!sessionID) return
+
+		const toolInfo =
+			eventProperties.tool && typeof eventProperties.tool === "object"
+				? (eventProperties.tool as Record<string, unknown>)
+				: undefined
+		const toolCallID = toNonEmptyString(toolInfo?.callID)
+		consumePendingQuestionNotification(pendingQuestionNotifications, sessionID, toolCallID)
+
+		const dedupeKey = buildQuestionEventDedupeKey(eventProperties)
+
 		if (
 			dedupeKey &&
 			!shouldSendDedupedNotification(
@@ -809,6 +869,39 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 			terminalInfo,
 			notificationRuntime,
 		)
+	}
+
+	const scheduleLegacyQuestionFallback = (sessionID: string, callID: string): void => {
+		const dedupeKey = buildQuestionToolDedupeKey(sessionID, callID)
+		if (!dedupeKey || pendingQuestionNotifications.has(dedupeKey)) return
+
+		const timeoutID = setTimeout(async () => {
+			pendingQuestionNotifications.delete(dedupeKey)
+
+			if (
+				!shouldSendDedupedNotification(
+					recentQuestionNotifications,
+					dedupeKey,
+					QUESTION_DEDUPE_WINDOW_MS,
+				)
+			) {
+				return
+			}
+
+			await handleQuestionAsked(
+				client as OpencodeClient,
+				sessionID,
+				config,
+				terminalInfo,
+				notificationRuntime,
+			)
+		}, QUESTION_FALLBACK_DELAY_MS)
+
+		pendingQuestionNotifications.set(dedupeKey, {
+			sessionID,
+			createdAt: Date.now(),
+			timeoutID,
+		})
 	}
 
 	const notifySessionReadyIfNeeded = async (sessionID: unknown): Promise<void> => {
@@ -863,10 +956,7 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 	return {
 		"tool.execute.before": async (input: { tool: string; sessionID: string; callID: string }) => {
 			if (input.tool === "question") {
-				await notifyQuestionIfNeeded(
-					buildQuestionToolDedupeKey(input.sessionID, input.callID),
-					input.sessionID,
-				)
+				scheduleLegacyQuestionFallback(input.sessionID, input.callID)
 			}
 		},
 		event: async ({ event }: { event: Event }): Promise<void> => {
@@ -912,11 +1002,7 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 					break
 				}
 				case "question.asked": {
-					const dedupeKey = buildQuestionEventDedupeKey(runtimeEvent.properties)
-					await notifyQuestionIfNeeded(
-						dedupeKey,
-						toNonEmptyString(runtimeEvent.properties.sessionID),
-					)
+					await notifyQuestionIfNeeded(runtimeEvent.properties)
 					break
 				}
 			}

@@ -203,7 +203,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		expect(notificationPayloads[0]?.title).toBe("Waiting for you")
 	})
 
-	it("notifies for question.asked and legacy question tool.execute.before", async () => {
+	it("prefers question.asked over the legacy question tool hook", async () => {
 		const { hooks } = await createPlugin()
 
 		await emitQuestionToolBefore(hooks, "session-a", "call-tool")
@@ -221,11 +221,8 @@ describe("notify plugin event compatibility and dedupe", () => {
 			},
 		})
 
-		expect(notificationPayloads).toHaveLength(2)
-		expect(notificationPayloads.map((payload) => payload.title)).toEqual([
-			"Question for you",
-			"Question for you",
-		])
+		expect(notificationPayloads).toHaveLength(1)
+		expect(notificationPayloads[0]?.title).toBe("Question for you")
 	})
 
 	it("dedupes question notification when question.asked and tool hook describe same request", async () => {
@@ -245,6 +242,18 @@ describe("notify plugin event compatibility and dedupe", () => {
 				},
 			},
 		})
+
+		expect(notificationPayloads).toHaveLength(1)
+		expect(notificationPayloads[0]?.title).toBe("Question for you")
+	})
+
+	it("keeps a delayed legacy fallback when only the tool hook fires", async () => {
+		const { hooks } = await createPlugin({
+			"session-a": { title: "Session A" },
+		})
+
+		await emitQuestionToolBefore(hooks, "session-a", "call-tool")
+		await Bun.sleep(75)
 
 		expect(notificationPayloads).toHaveLength(1)
 		expect(notificationPayloads[0]?.title).toBe("Question for you")
