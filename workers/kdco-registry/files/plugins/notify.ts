@@ -32,26 +32,53 @@ import { sendNotificationWithFallback } from "./notify/backend"
 import { canUseCmuxNotification, sendCmuxNotification } from "./notify/cmux"
 import {
 	canUseFreedesktopNotification,
+	type FreedesktopHintValue,
 	getFreedesktopCapabilities,
 	sendFreedesktopNotification,
 } from "./notify/freedesktop"
+
+type NotifyEventKind = "idle" | "error" | "permission" | "question"
+type LinuxNotificationBackend = "auto" | "freedesktop" | "node-notifier"
+type SessionNamePlacement = "summary" | "body"
+type LinuxSoundMode = "name" | "file" | "off"
+type LinuxUrgency = "low" | "normal" | "critical"
+
+type EventSoundMap = {
+	idle: string
+	error: string
+	permission: string
+	question?: string
+}
+
+type EventNumberMap = Partial<Record<NotifyEventKind, number>>
+type EventBooleanMap = Partial<Record<NotifyEventKind, boolean>>
+type EventStringMap = Partial<Record<NotifyEventKind, string>>
+type EventUrgencyMap = Partial<Record<NotifyEventKind, LinuxUrgency>>
+
+interface LinuxNotifyConfig {
+	backend: LinuxNotificationBackend
+	sessionNamePlacement: SessionNamePlacement
+	timeoutMs: EventNumberMap
+	persistent: EventBooleanMap
+	urgency: EventUrgencyMap
+	soundMode: LinuxSoundMode
+	soundNames: EventStringMap
+	soundFiles: EventStringMap
+}
 
 interface NotifyConfig {
 	/** Notify for child/sub-session events (default: false) */
 	notifyChildSessions: boolean
 	/** Sound configuration per event type */
-	sounds: {
-		idle: string
-		error: string
-		permission: string
-		question?: string
-	}
+	sounds: EventSoundMap
 	/** Quiet hours configuration */
 	quietHours: {
 		enabled: boolean
 		start: string // "HH:MM" format
 		end: string // "HH:MM" format
 	}
+	/** Linux/freedesktop-specific options */
+	linux: LinuxNotifyConfig
 	/** Override terminal detection (optional) */
 	terminal?: string
 }
@@ -73,6 +100,34 @@ const DEFAULT_CONFIG: NotifyConfig = {
 		enabled: false,
 		start: "22:00",
 		end: "08:00",
+	},
+	linux: {
+		backend: "auto",
+		sessionNamePlacement: "summary",
+		timeoutMs: {
+			idle: -1,
+			error: -1,
+			permission: 0,
+			question: 0,
+		},
+		persistent: {
+			permission: true,
+			question: true,
+		},
+		urgency: {
+			idle: "normal",
+			error: "critical",
+			permission: "critical",
+			question: "normal",
+		},
+		soundMode: "name",
+		soundNames: {
+			idle: "message",
+			error: "dialog-error",
+			permission: "message-new-instant",
+			question: "message-new-instant",
+		},
+		soundFiles: {},
 	},
 }
 
@@ -114,6 +169,30 @@ async function loadConfig(): Promise<NotifyConfig> {
 			quietHours: {
 				...DEFAULT_CONFIG.quietHours,
 				...userConfig.quietHours,
+			},
+			linux: {
+				...DEFAULT_CONFIG.linux,
+				...userConfig.linux,
+				timeoutMs: {
+					...DEFAULT_CONFIG.linux.timeoutMs,
+					...userConfig.linux?.timeoutMs,
+				},
+				persistent: {
+					...DEFAULT_CONFIG.linux.persistent,
+					...userConfig.linux?.persistent,
+				},
+				urgency: {
+					...DEFAULT_CONFIG.linux.urgency,
+					...userConfig.linux?.urgency,
+				},
+				soundNames: {
+					...DEFAULT_CONFIG.linux.soundNames,
+					...userConfig.linux?.soundNames,
+				},
+				soundFiles: {
+					...DEFAULT_CONFIG.linux.soundFiles,
+					...userConfig.linux?.soundFiles,
+				},
 			},
 		}
 	} catch {
@@ -248,6 +327,11 @@ interface NotificationOptions {
 	subtitle?: string
 	cmuxBody?: string
 	sound: string
+	freedesktopSummary?: string
+	freedesktopBody?: string
+	freedesktopHints?: Record<string, FreedesktopHintValue>
+	freedesktopTimeoutMs?: number
+	freedesktopReplaceKey?: string
 	terminalInfo: TerminalInfo
 }
 
@@ -255,6 +339,7 @@ interface NotificationRuntime {
 	preferCmux: boolean
 	preferFreedesktop: boolean
 	freedesktopSupportsSound: boolean
+	freedesktopNotificationIDs: Map<string, number>
 }
 
 interface SessionMetadata {
@@ -349,6 +434,97 @@ function buildPermissionEventDedupeKey(properties: unknown): string | null {
 	return `permission:request:${normalizedRequestID}`
 }
 
+function shouldUseFreedesktopBackend(config: NotifyConfig, backendAvailable: boolean): boolean {
+	if (!backendAvailable) return false
+	if (process.platform !== "linux") return false
+
+	return config.linux.backend !== "node-notifier"
+}
+
+function getLinuxTimeoutMs(config: NotifyConfig, kind: NotifyEventKind): number {
+	return config.linux.timeoutMs[kind] ?? DEFAULT_CONFIG.linux.timeoutMs[kind] ?? -1
+}
+
+function getLinuxUrgencyByte(config: NotifyConfig, kind: NotifyEventKind): number {
+	const urgency = config.linux.urgency[kind] ?? DEFAULT_CONFIG.linux.urgency[kind] ?? "normal"
+
+	switch (urgency) {
+		case "low":
+			return 0
+		case "critical":
+			return 2
+		default:
+			return 1
+	}
+}
+
+function buildFreedesktopHints(
+	config: NotifyConfig,
+	kind: NotifyEventKind,
+	runtime: NotificationRuntime,
+): Record<string, FreedesktopHintValue> {
+	const hints: Record<string, FreedesktopHintValue> = {
+		urgency: {
+			kind: "byte",
+			value: getLinuxUrgencyByte(config, kind),
+		},
+		transient: {
+			kind: "boolean",
+			value: !config.linux.persistent[kind],
+		},
+	}
+
+	if (config.linux.persistent[kind]) {
+		hints.resident = {
+			kind: "boolean",
+			value: true,
+		}
+	}
+
+	if (!runtime.freedesktopSupportsSound) {
+		return hints
+	}
+
+	if (config.linux.soundMode === "off") {
+		hints["suppress-sound"] = {
+			kind: "boolean",
+			value: true,
+		}
+		return hints
+	}
+
+	if (config.linux.soundMode === "file") {
+		const soundFile = config.linux.soundFiles[kind]
+		if (soundFile) {
+			hints["sound-file"] = {
+				kind: "string",
+				value: soundFile,
+			}
+		}
+		return hints
+	}
+
+	const soundName = config.linux.soundNames[kind]
+	if (soundName) {
+		hints["sound-name"] = {
+			kind: "string",
+			value: soundName,
+		}
+	}
+
+	return hints
+}
+
+async function getOptionalSessionTitle(
+	client: OpencodeClient,
+	sessionID: string | null | undefined,
+): Promise<string | null> {
+	if (!sessionID) return null
+
+	const sessionMetadata = await getSessionMetadata(client, sessionID)
+	return sessionMetadata.title
+}
+
 function sendNodeNotification(options: NotificationOptions): void {
 	const { title, message, sound, terminalInfo } = options
 
@@ -391,18 +567,27 @@ async function sendNotification(
 						{
 							kind: "freedesktop",
 							send: async () => {
+								const replaceID = options.freedesktopReplaceKey
+									? (runtime.freedesktopNotificationIDs.get(options.freedesktopReplaceKey) ?? 0)
+									: 0
 								const result = await sendFreedesktopNotification({
-									summary: options.title,
-									body: options.message,
-									hints: runtime.freedesktopSupportsSound
-										? {
-												"sound-name": {
-													kind: "string",
-													value: options.sound,
-												},
-											}
-										: undefined,
+									summary: options.freedesktopSummary ?? options.title,
+									body: options.freedesktopBody ?? options.message,
+									replaceID,
+									timeoutMs: options.freedesktopTimeoutMs,
+									hints: options.freedesktopHints,
 								})
+
+								if (
+									result.sent &&
+									result.notificationID !== null &&
+									options.freedesktopReplaceKey
+								) {
+									runtime.freedesktopNotificationIDs.set(
+										options.freedesktopReplaceKey,
+										result.notificationID,
+									)
+								}
 
 								return result.sent
 							},
@@ -447,6 +632,13 @@ async function handleSessionIdle(
 			subtitle: sessionTitle,
 			cmuxBody: "OpenCode task is ready for review",
 			sound: config.sounds.idle,
+			freedesktopSummary:
+				config.linux.sessionNamePlacement === "summary" ? sessionTitle : "Ready for review",
+			freedesktopBody:
+				config.linux.sessionNamePlacement === "summary" ? "Ready for review" : sessionTitle,
+			freedesktopHints: buildFreedesktopHints(config, "idle", notificationRuntime),
+			freedesktopTimeoutMs: getLinuxTimeoutMs(config, "idle"),
+			freedesktopReplaceKey: `session-ready:${sessionID}`,
 			terminalInfo,
 		},
 		notificationRuntime,
@@ -475,12 +667,20 @@ async function handleSessionError(
 	if (await isTerminalFocused(terminalInfo)) return
 
 	const errorMessage = error?.slice(0, 100) || "Something went wrong"
+	const sessionTitle = sessionMetadata.title ?? "Something went wrong"
 
 	await sendNotification(
 		{
 			title: "Something went wrong",
 			message: errorMessage,
 			sound: config.sounds.error,
+			freedesktopSummary:
+				config.linux.sessionNamePlacement === "summary" ? sessionTitle : errorMessage,
+			freedesktopBody:
+				config.linux.sessionNamePlacement === "summary" ? errorMessage : sessionTitle,
+			freedesktopHints: buildFreedesktopHints(config, "error", notificationRuntime),
+			freedesktopTimeoutMs: getLinuxTimeoutMs(config, "error"),
+			freedesktopReplaceKey: `session-error:${sessionID}`,
 			terminalInfo,
 		},
 		notificationRuntime,
@@ -488,6 +688,8 @@ async function handleSessionError(
 }
 
 async function handlePermissionUpdated(
+	client: OpencodeClient,
+	sessionID: string | null,
 	config: NotifyConfig,
 	terminalInfo: TerminalInfo,
 	notificationRuntime: NotificationRuntime,
@@ -501,11 +703,24 @@ async function handlePermissionUpdated(
 	// Check if terminal is focused (suppress notification if user is already looking)
 	if (await isTerminalFocused(terminalInfo)) return
 
+	const sessionTitle = (await getOptionalSessionTitle(client, sessionID)) ?? "Waiting for you"
+
 	await sendNotification(
 		{
 			title: "Waiting for you",
 			message: "OpenCode needs your input",
 			sound: config.sounds.permission,
+			freedesktopSummary:
+				config.linux.sessionNamePlacement === "summary"
+					? sessionTitle
+					: "OpenCode needs your input",
+			freedesktopBody:
+				config.linux.sessionNamePlacement === "summary"
+					? "OpenCode needs your input"
+					: sessionTitle,
+			freedesktopHints: buildFreedesktopHints(config, "permission", notificationRuntime),
+			freedesktopTimeoutMs: getLinuxTimeoutMs(config, "permission"),
+			freedesktopReplaceKey: sessionID ? `permission:${sessionID}` : undefined,
 			terminalInfo,
 		},
 		notificationRuntime,
@@ -513,6 +728,8 @@ async function handlePermissionUpdated(
 }
 
 async function handleQuestionAsked(
+	client: OpencodeClient,
+	sessionID: string | null,
 	config: NotifyConfig,
 	terminalInfo: TerminalInfo,
 	notificationRuntime: NotificationRuntime,
@@ -521,12 +738,24 @@ async function handleQuestionAsked(
 	if (isQuietHours(config)) return
 
 	const sound = config.sounds.question ?? config.sounds.permission
+	const sessionTitle = (await getOptionalSessionTitle(client, sessionID)) ?? "Question for you"
 
 	await sendNotification(
 		{
 			title: "Question for you",
 			message: "OpenCode needs your input",
 			sound,
+			freedesktopSummary:
+				config.linux.sessionNamePlacement === "summary"
+					? sessionTitle
+					: "OpenCode needs your input",
+			freedesktopBody:
+				config.linux.sessionNamePlacement === "summary"
+					? "OpenCode needs your input"
+					: sessionTitle,
+			freedesktopHints: buildFreedesktopHints(config, "question", notificationRuntime),
+			freedesktopTimeoutMs: getLinuxTimeoutMs(config, "question"),
+			freedesktopReplaceKey: sessionID ? `question:${sessionID}` : undefined,
 			terminalInfo,
 		},
 		notificationRuntime,
@@ -545,18 +774,23 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 
 	// Detect terminal once at startup (cached for performance)
 	const terminalInfo = await detectTerminalInfo(config)
-	const preferFreedesktop = canUseFreedesktopNotification()
+	const freedesktopAvailable = canUseFreedesktopNotification()
+	const preferFreedesktop = shouldUseFreedesktopBackend(config, freedesktopAvailable)
 	const freedesktopCapabilities = preferFreedesktop ? await getFreedesktopCapabilities() : new Set()
 	const notificationRuntime: NotificationRuntime = {
 		preferCmux: canUseCmuxNotification(),
 		preferFreedesktop,
 		freedesktopSupportsSound: freedesktopCapabilities.has("sound"),
+		freedesktopNotificationIDs: new Map(),
 	}
 	const recentQuestionNotifications: RecentNotifications = new Map()
 	const recentReadyNotifications: RecentNotifications = new Map()
 	const recentPermissionNotifications: RecentNotifications = new Map()
 
-	const notifyQuestionIfNeeded = async (dedupeKey: string | null): Promise<void> => {
+	const notifyQuestionIfNeeded = async (
+		dedupeKey: string | null,
+		sessionID: string | null,
+	): Promise<void> => {
 		if (
 			dedupeKey &&
 			!shouldSendDedupedNotification(
@@ -568,7 +802,13 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 			return
 		}
 
-		await handleQuestionAsked(config, terminalInfo, notificationRuntime)
+		await handleQuestionAsked(
+			client as OpencodeClient,
+			sessionID,
+			config,
+			terminalInfo,
+			notificationRuntime,
+		)
 	}
 
 	const notifySessionReadyIfNeeded = async (sessionID: unknown): Promise<void> => {
@@ -595,6 +835,10 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 
 	const notifyPermissionIfNeeded = async (properties: unknown): Promise<void> => {
 		const dedupeKey = buildPermissionEventDedupeKey(properties)
+		const sessionID =
+			properties && typeof properties === "object"
+				? toNonEmptyString((properties as Record<string, unknown>).sessionID)
+				: null
 
 		if (
 			dedupeKey &&
@@ -607,13 +851,22 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 			return
 		}
 
-		await handlePermissionUpdated(config, terminalInfo, notificationRuntime)
+		await handlePermissionUpdated(
+			client as OpencodeClient,
+			sessionID,
+			config,
+			terminalInfo,
+			notificationRuntime,
+		)
 	}
 
 	return {
 		"tool.execute.before": async (input: { tool: string; sessionID: string; callID: string }) => {
 			if (input.tool === "question") {
-				await notifyQuestionIfNeeded(buildQuestionToolDedupeKey(input.sessionID, input.callID))
+				await notifyQuestionIfNeeded(
+					buildQuestionToolDedupeKey(input.sessionID, input.callID),
+					input.sessionID,
+				)
 			}
 		},
 		event: async ({ event }: { event: Event }): Promise<void> => {
@@ -660,7 +913,10 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 				}
 				case "question.asked": {
 					const dedupeKey = buildQuestionEventDedupeKey(runtimeEvent.properties)
-					await notifyQuestionIfNeeded(dedupeKey)
+					await notifyQuestionIfNeeded(
+						dedupeKey,
+						toNonEmptyString(runtimeEvent.properties.sessionID),
+					)
 					break
 				}
 			}

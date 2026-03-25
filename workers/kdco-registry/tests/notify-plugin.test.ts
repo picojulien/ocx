@@ -13,6 +13,7 @@ const notificationPayloads: Array<Record<string, unknown>> = []
 const notifyMock = mock((payload: Record<string, unknown>) => {
 	notificationPayloads.push(payload)
 })
+const freedesktopCommands: string[][] = []
 
 mock.module("node:fs/promises", () => ({
 	readFile: async () => {
@@ -44,6 +45,7 @@ beforeEach(() => {
 	mockedConfig = undefined
 	mockedTerminalName = null
 	notificationPayloads.length = 0
+	freedesktopCommands.length = 0
 	notifyMock.mockClear()
 	delete process.env.CMUX_WORKSPACE_ID
 	delete process.env.DBUS_SESSION_BUS_ADDRESS
@@ -84,6 +86,45 @@ function mockFocusedTerminal(): void {
 			stderr: new Blob([""]).stream(),
 			exited: Promise.resolve(0),
 		} as ReturnType<typeof Bun.spawn>
+	})
+}
+
+function mockFreedesktopNotifications(capabilities: string[] = ["sound"]): void {
+	process.env.DBUS_SESSION_BUS_ADDRESS = "unix:path=/tmp/bus"
+	let notificationID = 0
+
+	spyOn(Bun, "spawn").mockImplementation((...args: unknown[]) => {
+		const command = args[0]
+		if (!Array.isArray(command) || typeof command[0] !== "string") {
+			throw new Error("Unexpected Bun.spawn invocation")
+		}
+
+		if (
+			command[0] === "dbus-send" &&
+			command[6] === "org.freedesktop.Notifications.GetCapabilities"
+		) {
+			const output = `method return\n   array [\n${capabilities
+				.map((capability) => `      string "${capability}"`)
+				.join("\n")}\n   ]\n`
+
+			return {
+				stdout: new Blob([output]).stream(),
+				stderr: new Blob([""]).stream(),
+				exited: Promise.resolve(0),
+			} as ReturnType<typeof Bun.spawn>
+		}
+
+		if (command[0] === "dbus-send" && command[6] === "org.freedesktop.Notifications.Notify") {
+			freedesktopCommands.push([...command])
+			notificationID += 1
+			return {
+				stdout: new Blob([`method return\n   uint32 ${notificationID}\n`]).stream(),
+				stderr: new Blob([""]).stream(),
+				exited: Promise.resolve(0),
+			} as ReturnType<typeof Bun.spawn>
+		}
+
+		throw new Error(`Unexpected Bun.spawn command: ${JSON.stringify(command)}`)
 	})
 }
 
@@ -419,5 +460,98 @@ describe("notify plugin event compatibility and dedupe", () => {
 		})
 
 		expect(notificationPayloads).toHaveLength(0)
+	})
+
+	it("uses freedesktop session summaries and replace ids when linux backend is enabled", async () => {
+		mockFreedesktopNotifications(["sound"])
+		mockedConfig = {
+			linux: {
+				backend: "freedesktop",
+				sessionNamePlacement: "summary",
+				timeoutMs: {
+					question: 4000,
+				},
+				persistent: {
+					question: true,
+				},
+				urgency: {
+					question: "critical",
+				},
+				soundMode: "name",
+				soundNames: {
+					question: "custom-question",
+				},
+			},
+		}
+
+		const { hooks } = await createPlugin({
+			"session-a": { title: "Session A" },
+		})
+
+		await emitEvent(hooks, {
+			type: "question.asked",
+			properties: {
+				id: "question-1",
+				sessionID: "session-a",
+				questions: [],
+			},
+		})
+
+		await emitEvent(hooks, {
+			type: "question.asked",
+			properties: {
+				id: "question-2",
+				sessionID: "session-a",
+				questions: [],
+			},
+		})
+
+		expect(notificationPayloads).toHaveLength(0)
+		expect(freedesktopCommands).toHaveLength(2)
+		expect(freedesktopCommands[0]).toMatchObject([
+			"dbus-send",
+			"--session",
+			"--dest=org.freedesktop.Notifications",
+			"--type=method_call",
+			"--print-reply",
+			"/org/freedesktop/Notifications",
+			"org.freedesktop.Notifications.Notify",
+			'string:"OpenCode"',
+			"uint32:0",
+			'string:""',
+			'string:"Session A"',
+			'string:"OpenCode needs your input"',
+			"array:string:",
+			'dict:string:variant:string:"urgency",byte:2,string:"transient",boolean:false,string:"resident",boolean:true,string:"sound-name",string:"custom-question"',
+			"int32:4000",
+		])
+		expect(freedesktopCommands[1]?.[8]).toBe("uint32:1")
+		expect(freedesktopCommands[1]?.[10]).toBe('string:"Session A"')
+		expect(freedesktopCommands[1]?.[11]).toBe('string:"OpenCode needs your input"')
+	})
+
+	it("keeps node-notifier fallback when linux backend is forced off", async () => {
+		mockFreedesktopNotifications(["sound"])
+		mockedConfig = {
+			linux: {
+				backend: "node-notifier",
+			},
+		}
+
+		const { hooks } = await createPlugin({
+			"session-a": { title: "Session A" },
+		})
+
+		await emitEvent(hooks, {
+			type: "question.asked",
+			properties: {
+				id: "question-1",
+				sessionID: "session-a",
+				questions: [],
+			},
+		})
+
+		expect(notificationPayloads).toHaveLength(1)
+		expect(freedesktopCommands).toHaveLength(0)
 	})
 })
