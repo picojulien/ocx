@@ -486,9 +486,9 @@ describe("notify plugin event compatibility and dedupe", () => {
 				urgency: {
 					question: "critical",
 				},
-				soundMode: "name",
-				soundNames: {
-					question: "custom-question",
+				soundMode: "file",
+				soundFiles: {
+					question: "/tmp/custom-question.oga",
 				},
 			},
 		}
@@ -531,12 +531,47 @@ describe("notify plugin event compatibility and dedupe", () => {
 			'string:"Session A"',
 			'string:"OpenCode needs your input"',
 			"array:string:",
-			'dict:string:variant:string:"urgency",byte:2,string:"transient",boolean:false,string:"resident",boolean:true,string:"sound-name",string:"custom-question"',
+			'dict:string:variant:string:"urgency",byte:2,string:"transient",boolean:false,string:"resident",boolean:true,string:"sound-file",string:"/tmp/custom-question.oga"',
 			"int32:4000",
 		])
 		expect(freedesktopCommands[1]?.[8]).toBe("uint32:1")
 		expect(freedesktopCommands[1]?.[10]).toBe('string:"Session A"')
 		expect(freedesktopCommands[1]?.[11]).toBe('string:"OpenCode needs your input"')
+	})
+
+	it("prefers configured sound files over sound names on linux", async () => {
+		mockFreedesktopNotifications(["sound"])
+		mockedConfig = {
+			linux: {
+				backend: "freedesktop",
+				soundMode: "name",
+				soundNames: {
+					question: "message-new-instant",
+				},
+				soundFiles: {
+					question: "/tmp/preferred-question.oga",
+				},
+			},
+		}
+
+		const { hooks } = await createPlugin({
+			"session-a": { title: "Session A" },
+		})
+
+		await emitEvent(hooks, {
+			type: "question.asked",
+			properties: {
+				id: "question-1",
+				sessionID: "session-a",
+				questions: [],
+			},
+		})
+
+		expect(freedesktopCommands).toHaveLength(1)
+		expect(freedesktopCommands[0]?.[13]).toContain(
+			'string:"sound-file",string:"/tmp/preferred-question.oga"',
+		)
+		expect(freedesktopCommands[0]?.[13]).not.toContain('string:"sound-name"')
 	})
 
 	it("keeps node-notifier fallback when linux backend is forced off", async () => {

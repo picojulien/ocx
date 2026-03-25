@@ -541,14 +541,16 @@ function buildFreedesktopHints(
 		return hints
 	}
 
-	if (config.linux.soundMode === "file") {
-		const soundFile = config.linux.soundFiles[kind]
-		if (soundFile) {
-			hints["sound-file"] = {
-				kind: "string",
-				value: soundFile,
-			}
+	const soundFile = config.linux.soundFiles[kind]
+	if (soundFile) {
+		hints["sound-file"] = {
+			kind: "string",
+			value: soundFile,
 		}
+		return hints
+	}
+
+	if (config.linux.soundMode === "file") {
 		return hints
 	}
 
