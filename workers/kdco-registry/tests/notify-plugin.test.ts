@@ -46,6 +46,7 @@ beforeEach(() => {
 	notificationPayloads.length = 0
 	notifyMock.mockClear()
 	delete process.env.CMUX_WORKSPACE_ID
+	delete process.env.DBUS_SESSION_BUS_ADDRESS
 })
 
 afterEach(() => {

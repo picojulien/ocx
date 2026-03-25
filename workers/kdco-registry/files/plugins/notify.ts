@@ -30,6 +30,11 @@ import notifier from "node-notifier"
 import type { OpencodeClient } from "./kdco-primitives/types"
 import { sendNotificationWithFallback } from "./notify/backend"
 import { canUseCmuxNotification, sendCmuxNotification } from "./notify/cmux"
+import {
+	canUseFreedesktopNotification,
+	getFreedesktopCapabilities,
+	sendFreedesktopNotification,
+} from "./notify/freedesktop"
 
 interface NotifyConfig {
 	/** Notify for child/sub-session events (default: false) */
@@ -248,6 +253,8 @@ interface NotificationOptions {
 
 interface NotificationRuntime {
 	preferCmux: boolean
+	preferFreedesktop: boolean
+	freedesktopSupportsSound: boolean
 }
 
 interface SessionMetadata {
@@ -365,19 +372,44 @@ async function sendNotification(
 	runtime: NotificationRuntime,
 ): Promise<void> {
 	await sendNotificationWithFallback({
-		backends: runtime.preferCmux
-			? [
-					{
-						kind: "cmux",
-						send: () =>
-							sendCmuxNotification({
-								title: options.title,
-								subtitle: options.subtitle,
-								body: options.cmuxBody ?? options.message,
-							}),
-					},
-				]
-			: [],
+		backends: [
+			...(runtime.preferCmux
+				? [
+						{
+							kind: "cmux",
+							send: () =>
+								sendCmuxNotification({
+									title: options.title,
+									subtitle: options.subtitle,
+									body: options.cmuxBody ?? options.message,
+								}),
+						},
+					]
+				: []),
+			...(runtime.preferFreedesktop
+				? [
+						{
+							kind: "freedesktop",
+							send: async () => {
+								const result = await sendFreedesktopNotification({
+									summary: options.title,
+									body: options.message,
+									hints: runtime.freedesktopSupportsSound
+										? {
+												"sound-name": {
+													kind: "string",
+													value: options.sound,
+												},
+											}
+										: undefined,
+								})
+
+								return result.sent
+							},
+						},
+					]
+				: []),
+		],
 		fallback: () => sendNodeNotification(options),
 	})
 }
@@ -513,8 +545,12 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 
 	// Detect terminal once at startup (cached for performance)
 	const terminalInfo = await detectTerminalInfo(config)
+	const preferFreedesktop = canUseFreedesktopNotification()
+	const freedesktopCapabilities = preferFreedesktop ? await getFreedesktopCapabilities() : new Set()
 	const notificationRuntime: NotificationRuntime = {
 		preferCmux: canUseCmuxNotification(),
+		preferFreedesktop,
+		freedesktopSupportsSound: freedesktopCapabilities.has("sound"),
 	}
 	const recentQuestionNotifications: RecentNotifications = new Map()
 	const recentReadyNotifications: RecentNotifications = new Map()
