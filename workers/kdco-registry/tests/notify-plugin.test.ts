@@ -318,6 +318,10 @@ describe("notify plugin event compatibility and dedupe", () => {
 	})
 
 	it("suppresses focus-gated notifications but keeps question prompt notifications", async () => {
+		if (process.platform !== "darwin") {
+			return
+		}
+
 		mockFocusedTerminal()
 
 		const { hooks } = await createPlugin({

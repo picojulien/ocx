@@ -1,21 +1,22 @@
+export interface NotificationBackendAttempt {
+	kind: string
+	send: () => Promise<boolean>
+}
+
 interface NotifyBackendOptions {
-	preferCmux: boolean
-	tryCmuxNotify: () => Promise<boolean>
-	sendNodeNotify: () => void
+	backends: NotificationBackendAttempt[]
+	fallback: () => void
 }
 
 export async function sendNotificationWithFallback(options: NotifyBackendOptions): Promise<void> {
-	if (!options.preferCmux) {
-		options.sendNodeNotify()
-		return
+	for (const backend of options.backends) {
+		try {
+			const sent = await backend.send()
+			if (sent) return
+		} catch {
+			// Fall through to the next backend attempt.
+		}
 	}
 
-	try {
-		const sentViaCmux = await options.tryCmuxNotify()
-		if (sentViaCmux) return
-	} catch {
-		// Fall through to node-notifier fallback
-	}
-
-	options.sendNodeNotify()
+	options.fallback()
 }

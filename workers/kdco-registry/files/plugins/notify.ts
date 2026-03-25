@@ -206,14 +206,30 @@ function isQuietHours(config: NotifyConfig): boolean {
 // PARENT SESSION DETECTION
 // ==========================================
 
-async function isParentSession(client: OpencodeClient, sessionID: string): Promise<boolean> {
+function truncateSessionTitle(title: string | undefined): string | null {
+	if (!title) return null
+
+	const normalizedTitle = title.trim()
+	if (!normalizedTitle) return null
+
+	return normalizedTitle.slice(0, 50)
+}
+
+async function getSessionMetadata(
+	client: OpencodeClient,
+	sessionID: string,
+): Promise<SessionMetadata> {
 	try {
 		const session = await client.session.get({ path: { id: sessionID } })
-		// No parentID means this IS the parent/root session
-		return !session.data?.parentID
+		return {
+			isParent: !session.data?.parentID,
+			title: truncateSessionTitle(session.data?.title),
+		}
 	} catch {
-		// If we can't fetch, assume it's a parent to be safe (notify rather than miss)
-		return true
+		return {
+			isParent: true,
+			title: null,
+		}
 	}
 }
 
@@ -232,6 +248,11 @@ interface NotificationOptions {
 
 interface NotificationRuntime {
 	preferCmux: boolean
+}
+
+interface SessionMetadata {
+	isParent: boolean
+	title: string | null
 }
 
 const QUESTION_DEDUPE_WINDOW_MS = 1500
@@ -344,14 +365,20 @@ async function sendNotification(
 	runtime: NotificationRuntime,
 ): Promise<void> {
 	await sendNotificationWithFallback({
-		preferCmux: runtime.preferCmux,
-		tryCmuxNotify: () =>
-			sendCmuxNotification({
-				title: options.title,
-				subtitle: options.subtitle,
-				body: options.cmuxBody ?? options.message,
-			}),
-		sendNodeNotify: () => sendNodeNotification(options),
+		backends: runtime.preferCmux
+			? [
+					{
+						kind: "cmux",
+						send: () =>
+							sendCmuxNotification({
+								title: options.title,
+								subtitle: options.subtitle,
+								body: options.cmuxBody ?? options.message,
+							}),
+					},
+				]
+			: [],
+		fallback: () => sendNodeNotification(options),
 	})
 }
 
@@ -366,10 +393,11 @@ async function handleSessionIdle(
 	terminalInfo: TerminalInfo,
 	notificationRuntime: NotificationRuntime,
 ): Promise<void> {
+	const sessionMetadata = await getSessionMetadata(client, sessionID)
+
 	// Check if we should notify for this session
-	if (!config.notifyChildSessions) {
-		const isParent = await isParentSession(client, sessionID)
-		if (!isParent) return
+	if (!config.notifyChildSessions && !sessionMetadata.isParent) {
+		return
 	}
 
 	// Check quiet hours
@@ -378,16 +406,7 @@ async function handleSessionIdle(
 	// Check if terminal is focused (suppress notification if user is already looking)
 	if (await isTerminalFocused(terminalInfo)) return
 
-	// Get session info for context
-	let sessionTitle = "Task"
-	try {
-		const session = await client.session.get({ path: { id: sessionID } })
-		if (session.data?.title) {
-			sessionTitle = session.data.title.slice(0, 50)
-		}
-	} catch {
-		// Use default title
-	}
+	const sessionTitle = sessionMetadata.title ?? "Task"
 
 	await sendNotification(
 		{
@@ -410,10 +429,11 @@ async function handleSessionError(
 	terminalInfo: TerminalInfo,
 	notificationRuntime: NotificationRuntime,
 ): Promise<void> {
+	const sessionMetadata = await getSessionMetadata(client, sessionID)
+
 	// Check if we should notify for this session
-	if (!config.notifyChildSessions) {
-		const isParent = await isParentSession(client, sessionID)
-		if (!isParent) return
+	if (!config.notifyChildSessions && !sessionMetadata.isParent) {
+		return
 	}
 
 	// Check quiet hours

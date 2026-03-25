@@ -4,16 +4,13 @@ import { sendCmuxNotification } from "../files/plugins/notify/cmux"
 
 describe("notify backend fallback behavior", () => {
 	it("uses node notifier directly when cmux is not preferred", async () => {
-		const tryCmuxNotify = mock(async () => true)
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: false,
-			tryCmuxNotify,
-			sendNodeNotify,
+			backends: [],
+			fallback: sendNodeNotify,
 		})
 
-		expect(tryCmuxNotify).not.toHaveBeenCalled()
 		expect(sendNodeNotify).toHaveBeenCalledTimes(1)
 	})
 
@@ -22,9 +19,13 @@ describe("notify backend fallback behavior", () => {
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: true,
-			tryCmuxNotify,
-			sendNodeNotify,
+			backends: [
+				{
+					kind: "cmux",
+					send: tryCmuxNotify,
+				},
+			],
+			fallback: sendNodeNotify,
 		})
 
 		expect(tryCmuxNotify).toHaveBeenCalledTimes(1)
@@ -36,9 +37,13 @@ describe("notify backend fallback behavior", () => {
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: true,
-			tryCmuxNotify,
-			sendNodeNotify,
+			backends: [
+				{
+					kind: "cmux",
+					send: tryCmuxNotify,
+				},
+			],
+			fallback: sendNodeNotify,
 		})
 
 		expect(tryCmuxNotify).toHaveBeenCalledTimes(1)
@@ -52,9 +57,13 @@ describe("notify backend fallback behavior", () => {
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: true,
-			tryCmuxNotify,
-			sendNodeNotify,
+			backends: [
+				{
+					kind: "cmux",
+					send: tryCmuxNotify,
+				},
+			],
+			fallback: sendNodeNotify,
 		})
 
 		expect(tryCmuxNotify).toHaveBeenCalledTimes(1)
@@ -65,20 +74,24 @@ describe("notify backend fallback behavior", () => {
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: true,
-			tryCmuxNotify: () =>
-				sendCmuxNotification(
-					{
-						title: "Something went wrong",
-						body: "Task failed",
-					},
-					{
-						spawnProcess: () => ({
-							exited: Promise.resolve(1),
-						}),
-					},
-				),
-			sendNodeNotify,
+			backends: [
+				{
+					kind: "cmux",
+					send: () =>
+						sendCmuxNotification(
+							{
+								title: "Something went wrong",
+								body: "Task failed",
+							},
+							{
+								spawnProcess: () => ({
+									exited: Promise.resolve(1),
+								}),
+							},
+						),
+				},
+			],
+			fallback: sendNodeNotify,
 		})
 
 		expect(sendNodeNotify).toHaveBeenCalledTimes(1)
@@ -88,25 +101,47 @@ describe("notify backend fallback behavior", () => {
 		const sendNodeNotify = mock(() => {})
 
 		await sendNotificationWithFallback({
-			preferCmux: true,
-			tryCmuxNotify: () =>
-				sendCmuxNotification(
-					{
-						title: "Ready",
-						body: "Task complete",
-					},
-					{
-						timeoutMs: 10,
-						spawnProcess: () => ({
-							exited: new Promise<number>(() => {
-								// Simulate hung cmux process
-							}),
-						}),
-					},
-				),
-			sendNodeNotify,
+			backends: [
+				{
+					kind: "cmux",
+					send: () =>
+						sendCmuxNotification(
+							{
+								title: "Ready",
+								body: "Task complete",
+							},
+							{
+								timeoutMs: 10,
+								spawnProcess: () => ({
+									exited: new Promise<number>(() => {
+										// Simulate hung cmux process
+									}),
+								}),
+							},
+						),
+				},
+			],
+			fallback: sendNodeNotify,
 		})
 
 		expect(sendNodeNotify).toHaveBeenCalledTimes(1)
+	})
+
+	it("falls through multiple backend attempts before fallback", async () => {
+		const firstBackend = mock(async () => false)
+		const secondBackend = mock(async () => false)
+		const fallback = mock(() => {})
+
+		await sendNotificationWithFallback({
+			backends: [
+				{ kind: "first", send: firstBackend },
+				{ kind: "second", send: secondBackend },
+			],
+			fallback,
+		})
+
+		expect(firstBackend).toHaveBeenCalledTimes(1)
+		expect(secondBackend).toHaveBeenCalledTimes(1)
+		expect(fallback).toHaveBeenCalledTimes(1)
 	})
 })
