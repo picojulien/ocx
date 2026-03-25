@@ -102,9 +102,9 @@ Works out of the box. To customize, create `~/.config/opencode/kdco-notify.json`
     "urgency": {
       "question": "critical"
     },
-    "soundMode": "name",
-    "soundNames": {
-      "question": "message-new-instant"
+    "soundMode": "file",
+    "soundFiles": {
+      "question": "/usr/share/sounds/freedesktop/stereo/message.oga"
     }
   },
   "quietHours": {
@@ -121,17 +121,17 @@ Configuration keys:
 - `terminal` (optional): override terminal auto-detection.
 - `sounds`: per-event sounds (`idle`, `error`, `permission`, optional `question`).
 - `linux.backend`: `auto`, `freedesktop`, or `node-notifier`.
-- `linux.sessionNamePlacement`: put the session title in the Linux notification summary or body.
+- `linux.sessionNamePlacement`: put the session title in the Linux notification summary or body. On freedesktop notifications, `summary` is the visible title line.
 - `linux.timeoutMs`: per-event Linux notification timeout overrides.
 - `linux.persistent`: per-event resident notification hints.
 - `linux.urgency`: per-event freedesktop urgency (`low`, `normal`, `critical`).
 - `linux.soundMode`: `name`, `file`, or `off` for Linux sound hints.
-- `linux.soundNames` / `linux.soundFiles`: per-event Linux sound hint values.
+- `linux.soundNames` / `linux.soundFiles`: per-event Linux sound hint values. On KDE/Plasma, prefer `soundFiles` when you want a reliable notification sound.
 - `quietHours`: scheduled suppression window.
 
 **Available macOS sounds:** Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine, Tink
 
-On Linux, the plugin sends freedesktop notification hints. Whether a sound actually plays depends on your desktop environment and notification server.
+On Linux, the plugin sends freedesktop notification hints. Whether a sound actually plays depends on your desktop environment and notification server. `sound-name` is best-effort; `sound-file` is the preferred option when your desktop supports notification sounds.
 
 ## FAQ
 
