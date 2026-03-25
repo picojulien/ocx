@@ -222,7 +222,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		})
 
 		expect(notificationPayloads).toHaveLength(1)
-		expect(notificationPayloads[0]?.title).toBe("Question for you")
+		expect(notificationPayloads[0]?.title).toBe("Session session-a")
 	})
 
 	it("dedupes question notification when question.asked and tool hook describe same request", async () => {
@@ -244,7 +244,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		})
 
 		expect(notificationPayloads).toHaveLength(1)
-		expect(notificationPayloads[0]?.title).toBe("Question for you")
+		expect(notificationPayloads[0]?.title).toBe("Session session-a")
 	})
 
 	it("keeps a delayed legacy fallback when only the tool hook fires", async () => {
@@ -256,7 +256,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		await Bun.sleep(75)
 
 		expect(notificationPayloads).toHaveLength(1)
-		expect(notificationPayloads[0]?.title).toBe("Question for you")
+		expect(notificationPayloads[0]?.title).toBe("Session A")
 	})
 
 	it("notifies for session.status idle and legacy session.idle", async () => {
@@ -364,7 +364,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		expect(notificationPayloads).toHaveLength(2)
 		expect(notificationPayloads.map((payload) => payload.title)).toEqual([
 			"Waiting for you",
-			"Question for you",
+			"Child Session",
 		])
 	})
 
@@ -411,7 +411,7 @@ describe("notify plugin event compatibility and dedupe", () => {
 		})
 
 		expect(notificationPayloads).toHaveLength(1)
-		expect(notificationPayloads[0]?.title).toBe("Question for you")
+		expect(notificationPayloads[0]?.title).toBe("Session A")
 	})
 
 	it("suppresses notifications during quiet hours for legacy and new event aliases", async () => {

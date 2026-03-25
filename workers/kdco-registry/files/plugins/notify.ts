@@ -790,7 +790,7 @@ async function handleQuestionAsked(
 
 	await sendNotification(
 		{
-			title: "Question for you",
+			title: sessionTitle,
 			message: "OpenCode needs your input",
 			sound,
 			freedesktopSummary:
