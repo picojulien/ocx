@@ -163,6 +163,7 @@ If you prefer not to use OCX, copy the plugin files into `.opencode/plugins/` an
 - `.opencode/plugins/notify.ts`
 - `.opencode/plugins/notify/backend.ts`
 - `.opencode/plugins/notify/cmux.ts`
+- `.opencode/plugins/notify/freedesktop.ts`
 - `.opencode/plugins/kdco-primitives/types.ts`
 - `.opencode/plugins/kdco-primitives/with-timeout.ts`
 
