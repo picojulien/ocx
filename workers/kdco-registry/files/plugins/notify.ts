@@ -55,6 +55,11 @@ type EventBooleanMap = Partial<Record<NotifyEventKind, boolean>>
 type EventStringMap = Partial<Record<NotifyEventKind, string>>
 type EventUrgencyMap = Partial<Record<NotifyEventKind, LinuxUrgency>>
 
+interface LinuxLocalSoundPlaybackConfig {
+	enabled: boolean
+	command: string
+}
+
 interface LinuxNotifyConfig {
 	backend: LinuxNotificationBackend
 	sessionNamePlacement: SessionNamePlacement
@@ -64,6 +69,7 @@ interface LinuxNotifyConfig {
 	soundMode: LinuxSoundMode
 	soundNames: EventStringMap
 	soundFiles: EventStringMap
+	localSoundPlayback: LinuxLocalSoundPlaybackConfig
 }
 
 interface NotifyConfig {
@@ -128,6 +134,10 @@ const DEFAULT_CONFIG: NotifyConfig = {
 			question: "message-new-instant",
 		},
 		soundFiles: {},
+		localSoundPlayback: {
+			enabled: false,
+			command: "paplay",
+		},
 	},
 }
 
@@ -192,6 +202,10 @@ async function loadConfig(): Promise<NotifyConfig> {
 				soundFiles: {
 					...DEFAULT_CONFIG.linux.soundFiles,
 					...userConfig.linux?.soundFiles,
+				},
+				localSoundPlayback: {
+					...DEFAULT_CONFIG.linux.localSoundPlayback,
+					...userConfig.linux?.localSoundPlayback,
 				},
 			},
 		}
@@ -332,6 +346,7 @@ interface NotificationOptions {
 	freedesktopHints?: Record<string, FreedesktopHintValue>
 	freedesktopTimeoutMs?: number
 	freedesktopReplaceKey?: string
+	linuxLocalSoundFile?: string
 	terminalInfo: TerminalInfo
 }
 
@@ -340,6 +355,7 @@ interface NotificationRuntime {
 	preferFreedesktop: boolean
 	freedesktopSupportsSound: boolean
 	freedesktopNotificationIDs: Map<string, number>
+	linuxLocalSoundCommand: string | null
 }
 
 interface SessionMetadata {
@@ -565,6 +581,34 @@ function buildFreedesktopHints(
 	return hints
 }
 
+function canUseLocalLinuxSoundPlayback(
+	config: NotifyConfig,
+	platform = process.platform,
+	resolveExecutable: (command: string) => string | null | undefined = (command) =>
+		Bun.which(command),
+): string | null {
+	if (platform !== "linux") return null
+	if (!config.linux.localSoundPlayback.enabled) return null
+
+	const command = config.linux.localSoundPlayback.command.trim()
+	if (!command) return null
+
+	return resolveExecutable(command) ? command : null
+}
+
+function playLinuxSoundFile(command: string, soundFile: string): void {
+	if (!soundFile.trim()) return
+
+	try {
+		Bun.spawn([command, soundFile], {
+			stdout: "ignore",
+			stderr: "ignore",
+		})
+	} catch {
+		// best effort local playback only
+	}
+}
+
 async function getOptionalSessionTitle(
 	client: OpencodeClient,
 	sessionID: string | null | undefined,
@@ -647,6 +691,10 @@ async function sendNotification(
 		],
 		fallback: () => sendNodeNotification(options),
 	})
+
+	if (runtime.linuxLocalSoundCommand && options.linuxLocalSoundFile) {
+		playLinuxSoundFile(runtime.linuxLocalSoundCommand, options.linuxLocalSoundFile)
+	}
 }
 
 // ==========================================
@@ -789,6 +837,7 @@ async function handleQuestionAsked(
 
 	const sound = config.sounds.question ?? config.sounds.permission
 	const sessionTitle = (await getOptionalSessionTitle(client, sessionID)) ?? "Question for you"
+	const linuxLocalSoundFile = config.linux.soundFiles.question
 
 	await sendNotification(
 		{
@@ -806,6 +855,7 @@ async function handleQuestionAsked(
 			freedesktopHints: buildFreedesktopHints(config, "question", notificationRuntime),
 			freedesktopTimeoutMs: getLinuxTimeoutMs(config, "question"),
 			freedesktopReplaceKey: sessionID ? `question:${sessionID}` : undefined,
+			linuxLocalSoundFile,
 			terminalInfo,
 		},
 		notificationRuntime,
@@ -825,6 +875,7 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 	// Detect terminal once at startup (cached for performance)
 	const terminalInfo = await detectTerminalInfo(config)
 	const freedesktopAvailable = canUseFreedesktopNotification()
+	const linuxLocalSoundCommand = canUseLocalLinuxSoundPlayback(config)
 	const preferFreedesktop = shouldUseFreedesktopBackend(config, freedesktopAvailable)
 	const freedesktopCapabilities = preferFreedesktop ? await getFreedesktopCapabilities() : new Set()
 	const notificationRuntime: NotificationRuntime = {
@@ -832,6 +883,7 @@ export const NotifyPlugin: Plugin = async (ctx) => {
 		preferFreedesktop,
 		freedesktopSupportsSound: freedesktopCapabilities.has("sound"),
 		freedesktopNotificationIDs: new Map(),
+		linuxLocalSoundCommand,
 	}
 	const recentQuestionNotifications: RecentNotifications = new Map()
 	const recentReadyNotifications: RecentNotifications = new Map()

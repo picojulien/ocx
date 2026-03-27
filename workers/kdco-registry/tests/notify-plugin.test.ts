@@ -14,6 +14,7 @@ const notifyMock = mock((payload: Record<string, unknown>) => {
 	notificationPayloads.push(payload)
 })
 const freedesktopCommands: string[][] = []
+const localSoundCommands: string[][] = []
 
 mock.module("node:fs/promises", () => ({
 	readFile: async () => {
@@ -46,6 +47,7 @@ beforeEach(() => {
 	mockedTerminalName = null
 	notificationPayloads.length = 0
 	freedesktopCommands.length = 0
+	localSoundCommands.length = 0
 	notifyMock.mockClear()
 	delete process.env.CMUX_WORKSPACE_ID
 	delete process.env.DBUS_SESSION_BUS_ADDRESS
@@ -119,6 +121,15 @@ function mockFreedesktopNotifications(capabilities: string[] = ["sound"]): void 
 			notificationID += 1
 			return {
 				stdout: new Blob([`method return\n   uint32 ${notificationID}\n`]).stream(),
+				stderr: new Blob([""]).stream(),
+				exited: Promise.resolve(0),
+			} as ReturnType<typeof Bun.spawn>
+		}
+
+		if (command[0] === "paplay") {
+			localSoundCommands.push([...command])
+			return {
+				stdout: new Blob([""]).stream(),
 				stderr: new Blob([""]).stream(),
 				exited: Promise.resolve(0),
 			} as ReturnType<typeof Bun.spawn>
@@ -572,6 +583,40 @@ describe("notify plugin event compatibility and dedupe", () => {
 			'string:"sound-file",string:"/tmp/preferred-question.oga"',
 		)
 		expect(freedesktopCommands[0]?.[13]).not.toContain('string:"sound-name"')
+		expect(localSoundCommands).toHaveLength(0)
+	})
+
+	it("plays a local linux sound file when fallback playback is enabled", async () => {
+		mockFreedesktopNotifications(["sound"])
+		mockedConfig = {
+			linux: {
+				backend: "freedesktop",
+				soundMode: "file",
+				soundFiles: {
+					question: "/tmp/local-question.oga",
+				},
+				localSoundPlayback: {
+					enabled: true,
+					command: "paplay",
+				},
+			},
+		}
+
+		const { hooks } = await createPlugin({
+			"session-a": { title: "Session A" },
+		})
+
+		await emitEvent(hooks, {
+			type: "question.asked",
+			properties: {
+				id: "question-1",
+				sessionID: "session-a",
+				questions: [],
+			},
+		})
+
+		expect(freedesktopCommands).toHaveLength(1)
+		expect(localSoundCommands).toEqual([["paplay", "/tmp/local-question.oga"]])
 	})
 
 	it("keeps node-notifier fallback when linux backend is forced off", async () => {
