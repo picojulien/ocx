@@ -105,6 +105,10 @@ Works out of the box. To customize, create `~/.config/opencode/kdco-notify.json`
     "soundMode": "file",
     "soundFiles": {
       "question": "/usr/share/sounds/freedesktop/stereo/message.oga"
+    },
+    "localSoundPlayback": {
+      "enabled": true,
+      "command": "paplay"
     }
   },
   "quietHours": {
@@ -127,11 +131,13 @@ Configuration keys:
 - `linux.urgency`: per-event freedesktop urgency (`low`, `normal`, `critical`).
 - `linux.soundMode`: `name`, `file`, or `off` for Linux sound hints.
 - `linux.soundNames` / `linux.soundFiles`: per-event Linux sound hint values. On KDE/Plasma, prefer `soundFiles` when you want a reliable notification sound.
+- `linux.localSoundPlayback.enabled`: when `true`, also plays the configured Linux sound file locally after sending the notification.
+- `linux.localSoundPlayback.command`: local player command for Linux fallback playback (defaults to `paplay`).
 - `quietHours`: scheduled suppression window.
 
 **Available macOS sounds:** Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi, Submarine, Tink
 
-On Linux, the plugin sends freedesktop notification hints. Whether a sound actually plays depends on your desktop environment and notification server. `sound-name` is best-effort; `sound-file` is the preferred option when your desktop supports notification sounds.
+On Linux, the plugin sends freedesktop notification hints. Whether a sound actually plays depends on your desktop environment and notification server. `sound-name` is best-effort; `sound-file` is the preferred option when your desktop supports notification sounds. If your desktop ignores notification sound hints, enable `localSoundPlayback` to play the configured sound file locally as a fallback.
 
 ## FAQ
 
